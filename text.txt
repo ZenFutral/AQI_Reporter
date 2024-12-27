@@ -1,0 +1,9 @@
+Air Quality:  https://aqicn.org/api/
+- https://aqicn.org/station/utah/davis/
+- https://aqicn.org/station/utah/weber/
+- https://aqicn.org/station/utah/salt-lake-city/
+- https://aqicn.org/station/utah/utah/lindon/
+
+
+
+Bluesku Post: https://docs.bsky.app/docs/advanced-guides/posts
