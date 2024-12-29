@@ -28,7 +28,7 @@ def getStationData(api_token) -> dict[str, dict]:
 
 class DataProcessor:
     aqi_severity: dict[range, str] = {
-        range(0,   50):  "🟢",
+        range(0,    50): "🟢",
         range(51,  100): "🟡",
         range(101, 150): "🟠",
         range(151, 200): "🔴",
@@ -50,7 +50,10 @@ class DataProcessor:
             pm25 = self._fixNumLen(pm25)
             o3 = self._fixNumLen(o3)
 
-            station_report = f"{color}  {name} (AQI {aqi}) {color}\npm25: {pm25}{pm25_trend}  | o3: {o3}{o3_trend}"
+            line1 = f"{color} {name} aqi {aqi}{color}"
+            line2 = f"pm25 {pm25}{pm25_trend}  o3 {o3}{o3_trend}"
+
+            station_report = f"{line1}\n{line2}"
 
             if self.full_report == "":
                 self.full_report = station_report
@@ -131,14 +134,14 @@ def main(isLive: bool) -> None:
         # Create and send a new post
         post = client.send_post(post)
     
-    else:
-        print(f"Char Count:{len(post)}")
-        print("========================")
-        print(post)
+    
+    print(f"Char Count:{len(post)}")
+    print("========================")
+    print(post)
         
 
 
-main(isLive= True)
+main(isLive= False)
 
 
 
