@@ -1,8 +1,9 @@
 from json import load
 from time import sleep
+from datetime import datetime
 from atproto import Client
-import requests
-
+from atproto import client_utils
+import requests, pickle, feedparser
 
 def getCredentials() -> tuple[str, str, str]:
     with open('credentials.json', 'r') as f:
@@ -39,21 +40,24 @@ class DataProcessor:
         self.full_report = ''
 
         for _, (station_name, station_data) in enumerate(station_data.items()):
-            aqi, pm25, pm25_fc, o3, o3_fc = self._getDesiredData(data= station_data)
+            min_aqi, dominent_pollution, max_aqi, avg_aqi, favg_aqi, fmax_aqi = self._getDesiredData(data= station_data)
             
-            color = self._getColor(aqi)
+            min_color = self._getColor(min_aqi)
+            max_color = self._getColor(max_aqi)
             name = self._formatName(name= station_name)
 
-            pm25_trend = self._getForecastDif(pm25, pm25_fc)
-            o3_trend = self._getForecastDif(o3, o3_fc)
+            trend = self._getAQITrend(avg_aqi, favg_aqi)
 
-            pm25 = self._fixNumLen(pm25)
-            o3 = self._fixNumLen(o3)
+            aqi_range = f"{min_aqi}-{max_aqi}"
+            spacer_len = 5 - len(aqi_range)
+            text_spacer = ''
 
-            line1 = f"{color} {name} aqi {aqi}{color}"
-            line2 = f"pm25 {pm25}{pm25_trend}  o3 {o3}{o3_trend}"
+            for _ in range(spacer_len):
+                text_spacer = f"{text_spacer} "
+            
+            line1 = f"{name}{min_color} {aqi_range}{text_spacer}{max_color} 24hr{trend}"
 
-            station_report = f"{line1}\n{line2}"
+            station_report = f"{line1}"
 
             if self.full_report == "":
                 self.full_report = station_report
@@ -61,16 +65,33 @@ class DataProcessor:
             else:
                 self.full_report = f"{self.full_report}\n\n{station_report}"
         
+    def _pullForcast(self, data: dict, day_idx: int, item: str):
+        # From a given day, pulls all 3 reported pollutants
+        forcast = data["data"]["forecast"]["daily"]
+        stats = ['pm25', 'pm10', 'o3']
+        results = []
+
+        for s in stats:
+            try:
+                results.append(forcast[s][day_idx][item])
+            
+            except IndexError:
+                continue
+        
+        return max(results)
+   
     def _getDesiredData(self, data: dict) -> tuple:
-        aqi =  int(data["data"]["aqi"])
+        # Current aqi
+        dominent_pollution =  data["data"]["dominentpol"]
 
-        pm25 = int(data["data"]["iaqi"]["pm25"]["v"])
-        pm25_fc = int(data["data"]["forecast"]["daily"]["pm25"][3]["avg"])
-
-        o3 =   int(data["data"]["iaqi"]["o3"]["v"])
-        o3_fc = int(data["data"]["forecast"]["daily"]["o3"][3]["avg"])
-
-        return (aqi, pm25, pm25_fc, o3, o3_fc)
+        max_aqi = self._pullForcast(data, 2, 'max')
+        min_aqi = self._pullForcast(data, 2, 'min')
+        avg_aqi = self._pullForcast(data, 2, 'avg')
+       
+        fmax_aqi = self._pullForcast(data, 3, 'max')
+        favg_aqi = self._pullForcast(data, 3, 'avg')
+       
+        return (min_aqi, dominent_pollution, max_aqi, avg_aqi, favg_aqi, fmax_aqi)
 
     def _getColor(self, aqi: int) -> str:
         for _, (key, value) in enumerate(DataProcessor.aqi_severity.items()):
@@ -92,17 +113,17 @@ class DataProcessor:
         
         return name.capitalize()
 
-    def _getForecastDif(self, current: int, forecast: int) -> str:
+    def _getAQITrend(self, current: int, forecast: int) -> str:
         change = forecast - current
 
         if change > 0:
-            return f"⬆️"
+            return "⬆️"
 
         elif change < 0:
-            return f"⬇️"
+            return "⬇️"
 
         else:
-            return "None"
+            return "🟦"
 
     def _fixNumLen(self, num: int) -> str:
         numstr = str(num)
@@ -113,7 +134,6 @@ class DataProcessor:
         else:
             return numstr
             
-
 def initClient(username: str, password: str):
     # Instantiate and login to client object
     client = Client()
@@ -121,27 +141,93 @@ def initClient(username: str, password: str):
 
     return client
 
-def main(isLive: bool) -> None:
+class NewsFinder:
+    # Check newsapi.org: https://newsapi.org/docs
+
+    def __init__(self, title_length):
+        self.history_limit = 10
+        self.url = None
+        self.title_length = title_length
+
+        self._loadLinkHist()
+        article_list = self._getWHO()
+        self._checkURLs(article_list)
+
+        if self.url == None:
+            article_list = self._getScienceDaily()
+            self._checkURLs(article_list)
+
+        if self.url != None:
+            self.link_history.append(self.url)
+            self._saveLinkHist()
+        
+        else:
+            self.url = ""
+
+    def _getWHO(self):
+        last_year = (datetime.now().year - 1)
+        request_url = f"https://www.who.int/api/news/newsitems?$filter=dad28089-7534-4298-838f-4e1fbd046054%20in%20healthtopics%20and%20PublicationDateAndTime%20gt%20{last_year}-01-01T00:00:01Z&$orderby=PublicationDateAndTime%20desc"
+        response = requests.get(request_url).json()
+        data = [(i['Title'],f"https://www.who.int/news/item{i['ItemDefaultUrl']}") for i in response['value']]
+        data.reverse()
+        return [i for i in data if len(i[0]) < self.title_length]
+        
+    def _getScienceDaily(self):
+        request_url = f"https://www.sciencedaily.com/rss/earth_climate/air_pollution.xml"
+        response = feedparser.parse(request_url)
+        response = [(i.title, i.id) for i in response.entries]
+        response.reverse()
+        return [i for i in response if len(i[0]) < self.title_length]
+
+    def _checkURLs(self, article_list):
+        for article in article_list:
+            if article not in self.link_history:
+                self.title = article[0]
+                self.url = article[1]
+
+    def _loadLinkHist(self):
+        try: 
+            with open('link_hist.pkl', 'rb') as f:
+                self.link_history = pickle.load(f)
+        
+        except EOFError:
+            self.link_history = []
+
+    def _saveLinkHist(self):
+        if len(self.link_history) > self.history_limit:
+            self.link_history = self.link_history[1:]
+
+        with open('link_hist.pkl', 'wb') as f:
+            pickle.dump(self.link_history, f)
+
+def main(isLive: bool = False) -> None:
     username, password, api_token = getCredentials()
 
     station_data: dict[str, dict] = getStationData(api_token)
     dp = DataProcessor(station_data)
-    post = dp.full_report
+    report = dp.full_report
+
+    chars_remaining = 300 - len(report)
+
+    nf = NewsFinder(chars_remaining)
+
+    tb = client_utils.TextBuilder()
+    tb.text(f"{report}\n\n")
+    tb.link(nf.title, nf.url)
+    post = tb.build_text()
+    facets = tb.build_facets()
 
     if isLive:
         client = initClient(username, password)
 
         # Create and send a new post
-        post = client.send_post(post)
-    
+        record_response = client.send_post(text= post, facets= facets)
     
     print(f"Char Count:{len(post)}")
     print("========================")
     print(post)
+    print("========================")
+    print(record_response)
+
         
-
-
-main(isLive= False)
-
-
-
+main(isLive= True)
