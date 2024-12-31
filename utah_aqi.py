@@ -1,12 +1,14 @@
 from json import load
 from time import sleep
+from random import choice
 from datetime import datetime
 from atproto import Client
 from atproto import client_utils
 import requests, pickle, feedparser
+from pathlib import Path
 
 def getCredentials() -> tuple[str, str, str]:
-    with open('credentials.json', 'r') as f:
+    with open(f'{cur_dir}/credentials.json', 'r') as f:
         data = load(f)
     
     user: str = data['username']
@@ -28,25 +30,25 @@ def getStationData(api_token) -> dict[str, dict]:
     return station_data
 
 class DataProcessor:
-    aqi_severity: dict[range, str] = {
-        range(0,    50): "🟢",
-        range(51,  100): "🟡",
-        range(101, 150): "🟠",
-        range(151, 200): "🔴",
-        range(201, 300): "🟣",
-        range(301, 999): "🟤"}
+    aqi_severity: dict[range, bytes] = {
+        range(0,    50): b'\xf0\x9f\x9f\xa2',
+        range(51,  100): b'\xf0\x9f\x9f\xa1',
+        range(101, 150): b'\xf0\x9f\x9f\xa0',
+        range(151, 200): b'\xf0\x9f\x94\xb4',
+        range(201, 300): b'\xf0\x9f\x9f\xa3',
+        range(301, 999): b'\xf0\x9f\x9f\xa4'}
 
     def __init__(self, station_data: dict[str, dict]):
         self.full_report = ''
 
         for _, (station_name, station_data) in enumerate(station_data.items()):
-            min_aqi, dominent_pollution, max_aqi, avg_aqi, favg_aqi, fmax_aqi = self._getDesiredData(data= station_data)
+            min_aqi, max_aqi, avg_aqi, favg_aqi = self._getDesiredData(data= station_data)
             
-            min_color = self._getColor(min_aqi)
-            max_color = self._getColor(max_aqi)
+            min_color = self._getColor(min_aqi).decode()
+            max_color = self._getColor(max_aqi).decode()
             name = self._formatName(name= station_name)
 
-            trend = self._getAQITrend(avg_aqi, favg_aqi)
+            trend = self._getAQITrend(avg_aqi, favg_aqi).decode()
 
             aqi_range = f"{min_aqi}-{max_aqi}"
             spacer_len = 5 - len(aqi_range)
@@ -55,9 +57,8 @@ class DataProcessor:
             for _ in range(spacer_len):
                 text_spacer = f"{text_spacer} "
             
-            line1 = f"{name}{min_color} {aqi_range}{text_spacer}{max_color} 24hr{trend}"
-
-            station_report = f"{line1}"
+            station_report = f"{name}{min_color!r} {aqi_range}{text_spacer}{max_color!r} 24hr{trend!r}"
+            station_report = station_report.replace("'","")
 
             if self.full_report == "":
                 self.full_report = station_report
@@ -77,29 +78,28 @@ class DataProcessor:
             
             except IndexError:
                 continue
+
+            except KeyError:
+                continue
         
         return max(results)
    
     def _getDesiredData(self, data: dict) -> tuple:
-        # Current aqi
-        dominent_pollution =  data["data"]["dominentpol"]
-
         max_aqi = self._pullForcast(data, 2, 'max')
         min_aqi = self._pullForcast(data, 2, 'min')
         avg_aqi = self._pullForcast(data, 2, 'avg')
        
-        fmax_aqi = self._pullForcast(data, 3, 'max')
         favg_aqi = self._pullForcast(data, 3, 'avg')
        
-        return (min_aqi, dominent_pollution, max_aqi, avg_aqi, favg_aqi, fmax_aqi)
+        return (min_aqi, max_aqi, avg_aqi, favg_aqi)
 
-    def _getColor(self, aqi: int) -> str:
+    def _getColor(self, aqi: int) -> bytes:
         for _, (key, value) in enumerate(DataProcessor.aqi_severity.items()):
             if aqi in key:
                 return value
         
         # THIS SHOULD NEVER HAPPEN
-        return ""
+        return b'0'
 
     def _formatName(self, name: str) -> str:
         if name == "salt-lake-city":
@@ -113,17 +113,17 @@ class DataProcessor:
         
         return name.capitalize()
 
-    def _getAQITrend(self, current: int, forecast: int) -> str:
+    def _getAQITrend(self, current: int, forecast: int) -> bytes:
         change = forecast - current
 
         if change > 0:
-            return "⬆️"
+            return b'\xe2\xac\x86\xef\xb8\x8f'
 
         elif change < 0:
-            return "⬇️"
+            return b'\xe2\xac\x87\xef\xb8\x8f'
 
         else:
-            return "🟦"
+            return b'\xf0\x9f\x9f\xa6'
 
     def _fixNumLen(self, num: int) -> str:
         numstr = str(num)
@@ -144,25 +144,34 @@ def initClient(username: str, password: str):
 class NewsFinder:
     # Check newsapi.org: https://newsapi.org/docs
 
+    backup_urls = [
+        ('Clean Air Fund', 'https://www.cleanairfund.org/'),
+        ('Breathe Utah', 'https://www.breatheutah.org/'),
+        ('Lung.org', 'https://www.lung.org/clean-air/stand-up-for-clean-air'),
+        ('Your Air Your Utah', 'https://yourairyourutah.org/'),
+        ('Climate and Clean Air', 'https://www.ccacoalition.org/')
+    ]
+
     def __init__(self, title_length):
         self.history_limit = 10
-        self.url = None
+        self.external_link_used = False
+        self.article = None
         self.title_length = title_length
-
         self._loadLinkHist()
-        article_list = self._getWHO()
-        self._checkURLs(article_list)
 
-        if self.url == None:
+        while self.article == None:
+            article_list = self._getWHO()
+            self._checkArticles(article_list)
+
             article_list = self._getScienceDaily()
-            self._checkURLs(article_list)
+            self._checkArticles(article_list)
 
-        if self.url != None:
-            self.link_history.append(self.url)
+        if self.external_link_used:
+            self.link_history.append(self.article)
             self._saveLinkHist()
-        
+
         else:
-            self.url = ""
+            self.article = self._getBackupLink()
 
     def _getWHO(self):
         last_year = (datetime.now().year - 1)
@@ -175,19 +184,22 @@ class NewsFinder:
     def _getScienceDaily(self):
         request_url = f"https://www.sciencedaily.com/rss/earth_climate/air_pollution.xml"
         response = feedparser.parse(request_url)
-        response = [(i.title, i.id) for i in response.entries]
-        response.reverse()
-        return [i for i in response if len(i[0]) < self.title_length]
+        data = [(i.title, i.id) for i in response.entries]
+        data.reverse()
+        return [i for i in data if len(i[0]) < self.title_length]
 
-    def _checkURLs(self, article_list):
+    def _getBackupLink(self):
+        return choice(self.backup_urls)
+
+    def _checkArticles(self, article_list):
         for article in article_list:
             if article not in self.link_history:
-                self.title = article[0]
-                self.url = article[1]
+                self.external_link_used = True
+                self.article = article
 
     def _loadLinkHist(self):
         try: 
-            with open('link_hist.pkl', 'rb') as f:
+            with open(f'{cur_dir}/link_hist.pkl', 'rb') as f:
                 self.link_history = pickle.load(f)
         
         except EOFError:
@@ -197,7 +209,7 @@ class NewsFinder:
         if len(self.link_history) > self.history_limit:
             self.link_history = self.link_history[1:]
 
-        with open('link_hist.pkl', 'wb') as f:
+        with open(f'{cur_dir}/link_hist.pkl', 'wb') as f:
             pickle.dump(self.link_history, f)
 
 def main(isLive: bool = False) -> None:
@@ -210,10 +222,11 @@ def main(isLive: bool = False) -> None:
     chars_remaining = 300 - len(report)
 
     nf = NewsFinder(chars_remaining)
+    title, url = nf.article
 
     tb = client_utils.TextBuilder()
     tb.text(f"{report}\n\n")
-    tb.link(nf.title, nf.url)
+    tb.link(title, url)
     post = tb.build_text()
     facets = tb.build_facets()
 
@@ -226,8 +239,8 @@ def main(isLive: bool = False) -> None:
     print(f"Char Count:{len(post)}")
     print("========================")
     print(post)
-    print("========================")
-    print(record_response)
 
-        
-main(isLive= True)
+cur_dir = Path.cwd()
+
+# 'isLive' controls BlueSky posting   
+main(isLive= False)
