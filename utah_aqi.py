@@ -31,11 +31,11 @@ def getStationData(api_token) -> dict[str, dict]:
 
 class DataProcessor:
     aqi_severity: dict[range, bytes] = {
-        range(0,    50): b'\xf0\x9f\x9f\xa2',
-        range(51,  100): b'\xf0\x9f\x9f\xa1',
-        range(101, 150): b'\xf0\x9f\x9f\xa0',
-        range(151, 200): b'\xf0\x9f\x94\xb4',
-        range(201, 300): b'\xf0\x9f\x9f\xa3',
+        range(0,    51): b'\xf0\x9f\x9f\xa2',
+        range(51,  101): b'\xf0\x9f\x9f\xa1',
+        range(101, 151): b'\xf0\x9f\x9f\xa0',
+        range(151, 201): b'\xf0\x9f\x94\xb4',
+        range(201, 301): b'\xf0\x9f\x9f\xa3',
         range(301, 999): b'\xf0\x9f\x9f\xa4'}
 
     def __init__(self, station_data: dict[str, dict]):
@@ -153,7 +153,7 @@ class NewsFinder:
     ]
 
     def __init__(self, title_length):
-        self.history_limit = 10
+        self.history_limit = 20
         self.external_link_used = False
         self.article = None
         self.title_length = title_length
